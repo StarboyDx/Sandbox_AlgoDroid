@@ -1,0 +1,47 @@
+# Engine Files
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+Packaged/
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+
+# VS
+*.sln
+.vscode
+.vs/
+*.VC.db
+*.VC.opendb
+*.suo
+*.pdb
+*.ilk
+*.obj
+*.opendb
+*.opensdf
+*.sdf
+*.log
+*.tlog
+*.lastbuildstate
+*.idb
+
+# Mac
+*.xcodeproj
+*.xcworkspace
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# ThirdParty
+Content/FabAssets/
+Content/Marketplace/
+Content/ThirdParty/
