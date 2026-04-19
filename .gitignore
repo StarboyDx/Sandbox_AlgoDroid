@@ -45,3 +45,10 @@ Desktop.ini
 Content/FabAssets/
 Content/Marketplace/
 Content/ThirdParty/
+Content/ParagonGreystone
+
+# Env
+.env
+
+# data
+npc_chroma_db
