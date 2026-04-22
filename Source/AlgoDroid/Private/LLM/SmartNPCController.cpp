@@ -28,6 +28,14 @@ void ASmartNPCController::OnPossess(APawn* InPawn)
 
 void ASmartNPCController::StartTalkiing(FString PlayerMessage)
 {
+	if (ActiveNpcId.IsEmpty())
+	{
+		if (ABaseNPCCharacter* NPC = Cast<ABaseNPCCharacter>(GetPawn()))
+		{
+			ActiveNpcId = NPC->NpcId;
+			UE_LOG(LogTemp, Warning, TEXT("[Controller] 重新锁定身份: %s"), *ActiveNpcId);
+		}
+	}
 	if (LLMBrain && !ActiveNpcId.IsEmpty())
 	{
 		// TEST LOG
