@@ -8,7 +8,7 @@ public class AlgoDroid : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
-		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "Sockets", "Networking", "Json", "JsonUtilities"});
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput", "Sockets", "Networking", "Json", "JsonUtilities", "HTTP"});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
 
