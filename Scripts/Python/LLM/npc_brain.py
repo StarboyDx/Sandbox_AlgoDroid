@@ -15,35 +15,42 @@ from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 # from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import StrOutputParser
+# from langchain_core.output_parsers import StrOutputParser # 字符串测试
 
 load_dotenv()
 
-# TODO: 写个外部函数让ai来决定是否调用，实现一个简单“agent”
+MAX_HISTORY_LEN = 10 # 滑动窗口大小
 
+# 结构化的输出，包含指令和对话
 class NPCResponse(BaseModel):
-    dialogue: str = Field(description="NPC对话内容")
+    dialogue: str = Field(description = "NPC对话内容")
     emotion: Literal['Neutral', 'Angry', 'Happy', 'Suspicious'] = Field(
-        description="情绪枚举"
+        description = "情绪枚举"
     )
     action: Literal['Idle', 'DrawSword', 'Laugh', 'LookAround'] = Field(
-        description="动作枚举"
+        description = "动作枚举"
     )
+    # 客户端指令Test
+    call_backup: bool = Field(description = "是否需要呼叫帮手。")
+    # 服务端指令Test
+    need_check_wanted: bool = Field(description = "是否需要查阅通缉令。")
+    target_name: str = Field(description = "通缉令目标姓名，否则为空。")
 
-# save，注意这里是记忆的简单实现方法，非常消耗token
-MEMORY_FILE = "saved/chat_history.json"
-
-def save_memory(messages: List[BaseMessage]):
-    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+# test
+def get_memory_path(npc_id: str):
+    os.makedirs("saved", exist_ok = True)
+    return f"saved/chat_history_{npc_id}.json"  
+def save_memory(npc_id: str, messages: List[BaseMessage]):
+    with open(get_memory_path(npc_id), "w", encoding="utf-8") as f:
         # 转换成可存储的格式
         json.dump([{"type": m.type, "content": m.content} for m in messages], f, 
                   ensure_ascii=False)
-
-def load_memory() -> List[BaseMessage]:
-    if not os.path.exists(MEMORY_FILE):
+def load_memory(npc_id: str) -> List[BaseMessage]:
+    path = get_memory_path(npc_id)
+    if not os.path.exists(path):
         return []
     try:
-        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
             messages = []
             for m in data:
@@ -55,25 +62,25 @@ def load_memory() -> List[BaseMessage]:
     except:
         return []
 
-def init_npc_brain():
-    print("正在为加雷斯加载记忆与世界观...")
-    
+def init_npc_brain(npc_id: str):
     # RAG 模块 1：加载与切分 --- 将长文本切成小块，方便大模型消化
-    loader = TextLoader("lore.txt", encoding = "utf-8")
-    documents = loader.load()
-    text_splitter = CharacterTextSplitter(chunk_size = 200, chunk_overlap = 20)
-    texts = text_splitter.split_documents(documents)
+    lore_path = f"NPCSettings/{npc_id}_lore.txt"
+    prompt_path = f"NPCSettings/prompts/{npc_id}_prompt.txt"
+    db_path = f"npc_chroma_db/npc_chroma_db_{npc_id}"
+    loader = TextLoader(lore_path, encoding = "utf-8")
+    texts = CharacterTextSplitter(chunk_size = 200, chunk_overlap = 20).\
+        split_documents(loader.load())
 
     # RAG 模块 2：Embedding --- 把文字变成数学向量，存入本地数据库
     # embeddings = OpenAIEmbeddings(model="text-embedding-v1")
     embeddings = DashScopeEmbeddings(
         model = "text-embedding-v1",
-        dashscope_api_key = os.environ.get("OPENAI_API_KEY") # 自动读取你的千问 Key
+        dashscope_api_key = os.environ.get("OPENAI_API_KEY") # 自动读取千问 Key
     )
     vectorstore = Chroma.from_documents(
         documents = texts,
         embedding = embeddings,
-        persist_directory = "./npc_chroma_db"
+        persist_directory = db_path
     )
     # 将数据库转化为检索器，每次找k条最相关的设定
     retriever = vectorstore.as_retriever(search_kwargs = {"k": 2})
@@ -82,10 +89,12 @@ def init_npc_brain():
     llm = ChatOpenAI(model = "qwen-plus", temperature = 0.7, timeout = 30)
     structured_llm = llm.with_structured_output(NPCResponse)
     
-    # 构造系统提示词
-    system_prompt = """你叫加雷斯，性格暴躁的骑士。严格根据【背景信息】回答。
-    必须根据语境选择规定的 emotion 和 action。
-    【背景信息】: {context}"""
+    # # 构造系统提示词
+    # system_prompt = """你叫加雷斯，性格暴躁的骑士。严格根据【背景信息】回答。
+    # 必须根据语境选择规定的 emotion 和 action。
+    # 【背景信息】: {context}"""
+    with open(prompt_path, "r", encoding = 'utf-8') as f:
+        system_prompt = f.read()
 
     # 组合prompt：系统设定+历史记忆+玩家新问题
     qa_prompt = ChatPromptTemplate.from_messages([
@@ -99,7 +108,7 @@ def init_npc_brain():
         return "\n\n".join(doc.page_content for doc in docs)
 
     # 组装Chain LCEL
-    # 逻辑流水线：检索文档 -> 组合上下文 -> 填入 Prompt -> 交给大模型 -> 输出字符串
+    # 逻辑流水线：检索文档 -> 组合上下文 -> 填入 Prompt -> 交给大模型 -> 结构化输出
     rag_chain = (
         {   
             # 使用 itemgetter 单独把字典里的 "question" 字符串提取出来，喂给检索器
@@ -114,47 +123,57 @@ def init_npc_brain():
     )
     return rag_chain
 
-if __name__ == "__main__":
-    # 读档，测试用，累计太多消耗token很快，重构前记得定期手动删
-    chat_history = load_memory()
-    print(f"--- 已载入 {len(chat_history)} 条历史记忆 ---")
+# test
+def check_wanted_list(target_name: str) -> str:
+    print(f"\n[后端静默执行] 查阅通缉令【{target_name}】...")
+    if target_name.lower() in ["fff", "ccc"]:
+        return f"警告：【{target_name}】是重犯！必须逮捕！"
+    return f"【{target_name}】没有任何犯罪记录，是个良民。"
 
-    try:
-        brain = init_npc_brain()
-    except Exception as e:
-        print(f"初始化失败: {e}")
-        exit()
-    print("\n[系统就绪] 输入 'quit' 退出。\n")
-    
-    #chat_history = []
-
-    while True:
-        user_input = input("[玩家]: ")
-        if user_input.lower() == 'quit':
-            break
-
-        # fixed：添加ValidationError防止大模型幻觉导致程序崩溃    
-        try:    
-            # 抛出问题，LangChain 会自动处理检索和上下文合并
-            response = brain.invoke({"question": user_input,
-                                    "chat_history": chat_history})
-        except ValidationError:
-            # 格式错误时的回复
-            print(f"\n[系统拦截] ⚠️ AI 试图输出非法动作/情绪！已自动替换为默认动作。")
-            response = NPCResponse(
-                dialogue="啧，你在说什么胡话？", 
-                emotion="Suspicious", 
-                action="LookAround"
-            )
-        except Exception as e:
-            print(f"\n[错误] API 响应超时或异常: {e}")
-            continue
+def agent_process(npc_id: str, user_input: str, full_history: list, brain_chain) -> dict:
+    # 滑动窗口压缩一下历史对话
+    active_history = full_history[-MAX_HISTORY_LEN:]
+    if len(full_history) > MAX_HISTORY_LEN:
+        print(f"[上下文管理] 历史已达 {len(full_history)} 条，\
+              仅发送最近 {MAX_HISTORY_LEN} 条。")
         
-        # test in terminal
-        print(f"\n[加雷斯]: {response.dialogue} \
-              (情绪: {response.emotion}, 动作: {response.action})\n")
+    try:
+        # 第一阶段思考
+        response = brain_chain.invoke({"question": user_input, "chat_history": active_history})
+        
+        # 服务端工具调用 (ReAct) test
+        if response.need_check_wanted and response.target_name:
+            result = check_wanted_list(response.target_name)
+            # 第二段思考，要把刚才的对话也加入历史片段
+            temp_history = active_history + [HumanMessage(content=user_input), \
+                                             AIMessage(content="(查阅卷宗...)")]
+            response = brain_chain.invoke({"question": f"【系统提示】：{result}", "chat_history": temp_history})
+            
+        # 打包安全字典返回给 Web 服务器
+        return response.model_dump()
 
-        # 将这一轮的对话加入记忆库，让 AI 记住上下文
-        chat_history.append(HumanMessage(content = user_input))
-        chat_history.append(AIMessage(content = response.dialogue))
-        save_memory(chat_history)
+    except ValidationError:
+        print("[拦截] 模型幻觉")
+        return {
+            "dialogue": "（掏了掏耳朵）风声太大，你再说一遍？",
+            "emotion": "Suspicious",
+            "action": "Idle",
+            "call_backup": False
+        }
+    except Exception as e:
+        raise e
+
+if __name__ == "__main__":
+    test_npc_id = input("测试 ID (gareth/elara): ").strip() or "gareth"
+    brain = init_npc_brain(test_npc_id)
+    history = load_memory(test_npc_id)
+    
+    while True:
+        user_input = input("\n[玩家]: ")
+        if user_input.lower() == 'quit': 
+            break
+        res = agent_process(test_npc_id, user_input, history, brain)
+        print(f"[{test_npc_id}]: {res['dialogue']} (摇人: {res['call_backup']})")
+        history.append(HumanMessage(content=user_input))
+        history.append(AIMessage(content=res['dialogue']))
+        save_memory(test_npc_id, history)
