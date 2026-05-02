@@ -16,7 +16,7 @@ while True:
     if user_text.lower() == 'quit':
         break
     elif user_text.lower() == 'switch':
-        new_npc = input("你想切换到哪个 NPC (例如 elara)？: ").strip()
+        new_npc = input("你想切换到哪个 NPC (目前只有gareth的设定)？: ").strip()
         if new_npc:
             current_npc = new_npc
             print(f"已将视线切换至: {current_npc}")

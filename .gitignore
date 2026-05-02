@@ -52,3 +52,7 @@ Content/ParagonGreystone
 
 # data
 npc_chroma_db
+chroma_data
+WorldSettings.json
+RawDocuments/
+NPCSettings

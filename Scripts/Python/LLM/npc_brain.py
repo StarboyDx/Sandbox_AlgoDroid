@@ -85,6 +85,7 @@ def init_npc_brain(npc_id: str):
     # 将数据库转化为检索器，每次找k条最相关的设定
     retriever = vectorstore.as_retriever(search_kwargs = {"k": 2})
 
+    # RAG原理，意义
     # 模型这里使用千问，实例化
     llm = ChatOpenAI(model = "qwen-plus", temperature = 0.7, timeout = 30)
     structured_llm = llm.with_structured_output(NPCResponse)
