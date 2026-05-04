@@ -1,12 +1,22 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 from npc_engine import NPCAgentEngine 
+from typing import Optional # 预留：未来可能添加附件处理（如图片、文件等）
 
 print("正在初始化 AIGC 游戏引擎网关...")
 agent_engine = NPCAgentEngine()
 app = FastAPI(title = "AIGC 智能体引擎网关", version = "1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"], # 允许 Vue 前端访问
+    allow_credentials=True,
+    allow_methods=["*"], # 允许所有请求方法 (GET, POST 等)
+    allow_headers=["*"], # 允许所有请求头
+)
 
 class ChatRequest(BaseModel):
     world_name: str = Field(..., description = "剧本名 (如 Valoria)")
@@ -14,7 +24,7 @@ class ChatRequest(BaseModel):
     npc_level: int = Field(..., description = "权限等级")
     player_id: str = Field(..., description = "玩家 ID")
     player_message: str = Field(..., description = "玩家输入")
-    image_base64: str = Field(default = None, description = "玩家发来的视野截图，Base64格式")
+    attachment_id: Optional[str] = Field(default=None, description="预留：处理后的视觉/文件特征ID")
 
 class ChatResponse(BaseModel):
     dialogue_text: str = Field(..., description = "纯文本回复，用于 UE5 UI 弹窗")

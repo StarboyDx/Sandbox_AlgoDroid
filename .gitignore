@@ -49,6 +49,8 @@ Content/ParagonGreystone
 
 # Env
 .env
+.env.local
+.env.*
 
 # data
 npc_chroma_db
