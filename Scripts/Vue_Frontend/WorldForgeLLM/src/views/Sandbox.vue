@@ -13,18 +13,17 @@ const sessionConfig = reactive({
   player_id: 'test_player_001', 
 })
 
-// 模拟的下拉选项 (未来可以在页面加载时用 Axios 从后端拉取真实列表)
-// const worldOptions = ref([])
-// const npcOptions = ref([])
-// const levelOptions = [1, 2, 3, 4, 5]
-
 // ====== 状态管理 (响应式数据) ======
+// 从后端获取的预设 NPC 列表
+const presetNpcs = ref([]) 
 // 输入框绑定的文本
 const inputText = ref('')
 // 聊天记录
 const chatHistory = ref([])
 // 加载状态
 const isLoading = ref(false)
+// 记忆提炼状态
+const isDistilling = ref(false)
 // 用于存放图片传给后端视觉模型后，返回的特征 ID
 const currentAttachmentId = ref(null)
 
@@ -32,7 +31,67 @@ const currentAttachmentId = ref(null)
 // ====== TODO: 多模态视觉通道 (使用 Axios) ======
 // 当用户选择了图片并触发上传时执行
 const handleImageUpload = async (options) => {
-  ElMessage.info('视觉接口暂未连通！')
+  ElMessage.info('视觉接口暂未开通！')
+}
+
+// 监听玩家 ID 或 NPC 切换时，可以选择清空当前屏幕的对话历史
+const clearChat = () => {
+  chatHistory.value = []
+  ElMessage.success('已切换测试环境，聊天记录已清空')
+}
+
+// 后端扫描拉取已经生成的NPC JSON 列表
+const fetchPresets = async () => {
+  try {
+    const res = await fetch('http://localhost:8000/api/v1/sandbox/presets')
+    const data = await res.json()
+    presetNpcs.value = data.npcs
+  } catch (error) {
+    console.error('获取NPC列表失败', error)
+  }
+}
+
+// 用户在下拉框选中一个存在的 NPC 时，自动同步其 Level
+const handleNpcChange = (val) => {
+  const found = presetNpcs.value.find(n => n.value === val)
+  if (found) {
+    sessionConfig.npc_level = found.level
+  }
+  clearChat() 
+}
+
+onMounted(() => {
+  fetchPresets() // 页面加载时获取预设 NPC 列表
+})
+
+// ====== 记忆提炼 (LTM) 请求 ======
+const distillMemory = async () => {
+  if (!sessionConfig.player_id || !sessionConfig.npc_name) {
+    ElMessage.warning('请先填写完整的玩家ID和NPC名称')
+    return
+  }
+  isDistilling.value = true
+  try {
+    const response = await fetch('http://localhost:8000/api/v1/memory/distill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        player_id: sessionConfig.player_id,
+        npc_name: sessionConfig.npc_name
+      })
+    })
+    const data = await response.json()
+    if (response.ok) {
+      ElMessage.success(data.msg || '记忆提炼成功')
+    } else {
+      ElMessage.warning(data.msg || '提炼被跳过')
+    }
+  } catch (error) {
+    console.error(error)
+    ElMessage.error('记忆提炼接口调用失败，请检查后端引擎')
+  } finally {
+    isDistilling.value = false
+  }
 }
 
 // ====== 流式对话通道 (使用原生 Fetch) ======
@@ -101,16 +160,6 @@ const sendMessage = async () => {
   }
 }
 
-// ====== TODO: 动态获取环境配置数据 ======
-// const fetchEnvironmentOptions = async () => {
-//   try {
-//   }
-// }
-
-// 网页刚打开时，自动触发上面的函数
-// onMounted(() => {
-//   fetchEnvironmentOptions()
-// })
 </script>
 
 <template>
@@ -119,13 +168,35 @@ const sendMessage = async () => {
     <el-card class="status-bar" shadow="hover">
       <div class="config-row">
         <div class="config-item">
-          <span class="label">世界观:</span>
-          <el-input v-model="sessionConfig.world_name" size="small" style="width: 120px" />
+          <span class="label">测试人员 ID:</span>
+          <el-input v-model="sessionConfig.player_id" size="small" style="width: 140px" @change="clearChat" />
         </div>
         <div class="config-item">
-          <span class="label">目标 NPC:</span>
-          <el-input v-model="sessionConfig.npc_name" size="small" style="width: 120px" />
+          <span class="label">世界观:</span>
+          <el-input v-model="sessionConfig.world_name" size="small" style="width: 120px" @change="clearChat" />
         </div>
+        <!-- 加入下拉预设 -->
+        <div class="config-item">
+          <span class="label">目标 NPC:</span>
+          <el-select 
+            v-model="sessionConfig.npc_name" 
+            size="small" 
+            style="width: 160px"
+            filterable
+            allow-create
+            default-first-option
+            placeholder="选择或直接输入"
+            @change="handleNpcChange"
+          >
+            <el-option 
+              v-for="npc in presetNpcs" 
+              :key="npc.value" 
+              :label="npc.label" 
+              :value="npc.value" 
+            />
+          </el-select>
+        </div>
+        
         <div class="config-item">
           <span class="label">权限等级:</span>
           <el-input-number v-model="sessionConfig.npc_level" :min="1" :max="10" size="small" style="width: 100px" />
@@ -140,7 +211,7 @@ const sendMessage = async () => {
     <el-card class="chat-area" shadow="hover">
       <div class="message-list">
         <div class="message system-msg">
-          <p>系统：您可以在顶部随时切换测试目标。</p>
+          <p>系统：您可以在顶部随时切换测试目标或自由输入新标识。</p>
         </div>
 
         <div 
@@ -169,7 +240,7 @@ const sendMessage = async () => {
       <el-button type="primary" :icon="Position" :loading="isLoading" @click="sendMessage">
         {{ isLoading ? '推理中...' : '发送' }}
       </el-button>
-      <el-button type="warning" :icon="Coin" plain>记忆提炼</el-button>
+      <el-button type="warning" :icon="Coin" plain :loading="isDistilling" @click="distillMemory">记忆提炼</el-button>
     </div>
   </div>
 </template>

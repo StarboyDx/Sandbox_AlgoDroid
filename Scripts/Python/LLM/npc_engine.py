@@ -3,6 +3,7 @@ import json
 import redis
 import chromadb
 import jieba
+import uuid
 from rank_bm25 import BM25Okapi
 from chromadb.utils import embedding_functions
 from openai import OpenAI
@@ -38,6 +39,55 @@ class NPCAgentEngine:
         except ImportError:
             self.reranker = None
             print("⚠️ 警告：未安装 sentence-transformers，RAG 降级为粗排模式。")
+
+        # 初始化长期记忆库
+        self.memory_col = self.db_client.get_or_create_collection(
+            name="agent_long_term_memory",  # 表名，与世界观比如kb_valoria区分开
+            embedding_function=self.emb_fn
+        )
+
+    # 这里专门给网页端那个记忆提炼
+    def distill_memory(self, player_id: str, npc_name: str) -> dict:
+        """从 Redis 读取近期对话，让大模型提炼关键信息，存入 ChromaDB"""
+        history = self._get_history(player_id, npc_name)
+        # 如果聊天记录太少，就不浪费 Token 去提炼了
+        if len(history) < 4:
+            return {"status": "skip", "msg": "对话轮数较少，暂时无需提炼。"}
+
+        history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
+        
+        prompt = f"""
+        请分析以下玩家与NPC({npc_name})的对话，提取关于玩家的偏好、重要承诺或关键事件。
+        以第三人称陈述句输出，每条结论简明扼要。如果没有重要信息，请只回复“无”。
+        [对话历史]：\n{history_text}\n[提取的长期记忆]："""
+
+        try:
+            # 调用小模型进行总结
+            res = self.llm_client.chat.completions.create(
+                model=self.slm_model_cloud,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1
+            )
+            distilled_facts = res.choices[0].message.content.strip()
+
+            if "无" in distilled_facts and len(distilled_facts) < 10:
+                 return {"status": "skip", "msg": "未提取到需要长期保存的信息。"}
+
+            # 将多条事实切分，打上特定玩家和NPC的标签，存入向量库
+            facts_list = [f.strip() for f in distilled_facts.split('\n') if f.strip()]
+            session_id = f"{player_id}_{npc_name}" # 隔离标识
+            
+            for fact in facts_list:
+                self.memory_col.add(
+                    documents=[fact],
+                    metadatas=[{"session_id": session_id}],
+                    ids=[str(uuid.uuid4())]
+                )
+            print(f"\n [记忆提炼完成] 为 [{session_id}] 存档了 {len(facts_list)} 条记忆:\n {facts_list}\n")
+            return {"status": "success", "msg": f"成功提炼并存入 {len(facts_list)} 条长期记忆！"}
+        except Exception as e:
+            print(f"记忆提炼失败: {str(e)}")
+            return {"status": "error", "msg": f"提炼失败: {str(e)}"}
 
     # ===========================================================
     # Short-term Memory (STM) 设计：基于 Redis 的轻量级对话历史存储
@@ -194,6 +244,23 @@ class NPCAgentEngine:
         system_prompt = self.prompt_manager.build_prompt(world_name, npc_name, player_id)
         history_messages = self._get_history(player_id, npc_name)
         rewritten_input = self._rewrite_query(player_input, history_messages)
+
+        # 检索此玩家的专属长期记忆，添加到系统提示里，提升个性化和上下文连续性
+        session_id = f"{player_id}_{npc_name}" # tip：这里确保了每个玩家和NPC记忆隔离的
+        try:
+            mem_res = self.memory_col.query(
+                query_texts=[rewritten_input],
+                n_results=2, # 找出最相关的2条过往记忆
+                where={"session_id": session_id}
+            )
+            mem_docs = mem_res["documents"][0] if mem_res["documents"] else []
+            if mem_docs:
+                ltm_context = "\n".join(mem_docs)
+                print(f"\n [长期记忆召回] 触发！召回到关于该玩家的记忆:\n {ltm_context}\n")
+                system_prompt += f"\n\n[长期记忆回忆] 看到玩家的话，你脑海中浮现出以下关于该玩家的记忆：\n{ltm_context}"
+        except Exception:
+            pass # 如果库是空的或报错，就不打扰对话流
+
         messages = [{"role": "system", "content": system_prompt}] + history_messages + [{"role": "user", "content": rewritten_input}]
         
         intent = self._route_intent(rewritten_input)
