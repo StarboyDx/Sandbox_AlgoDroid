@@ -1,6 +1,7 @@
 import os
 import json
 import redis
+import time
 import chromadb
 import jieba
 import uuid
@@ -57,9 +58,19 @@ class NPCAgentEngine:
         history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in history])
         
         prompt = f"""
-        请分析以下玩家与NPC({npc_name})的对话，提取关于玩家的偏好、重要承诺或关键事件。
-        以第三人称陈述句输出，每条结论简明扼要。如果没有重要信息，请只回复“无”。
-        [对话历史]：\n{history_text}\n[提取的长期记忆]："""
+        你是一个客观的“剧情记录员”。请分析以下【玩家(role: user)】与【NPC-{npc_name}(role: assistant)】的近期对话。
+        请提取具有长期保存价值的关键信息。
+
+        提取规则（必须严格遵守）：
+        1. 【主语明确】：必须清晰区分“玩家”和“NPC-{npc_name}”，绝不能张冠李戴。
+        2. 【玩家画像】：提取玩家的喜好、身份、意图或携带的物品状态。
+        3. 【信息同步】：如果 NPC 向玩家透露了重要秘密、身世或线索，必须记录为：“玩家已经知晓了 NPC {npc_name} 的[具体秘密]” 或 “NPC {npc_name} 已经向玩家透露了[某事]”。（避免 NPC 日后重复讲述）
+        4. 【承诺与交易】：记录双方达成的交易或未完成的承诺。
+        5. 【忽略废话】：日常寒暄、无意义的语气词请直接忽略。如果没有符合上述条件的信息，请仅回复“无”。
+
+        请以第三人称陈述句输出，每行一条。
+        [对话历史]：\n{history_text}\n
+        [提取的关键记忆]："""
 
         try:
             # 调用小模型进行总结
@@ -76,11 +87,12 @@ class NPCAgentEngine:
             # 将多条事实切分，打上特定玩家和NPC的标签，存入向量库
             facts_list = [f.strip() for f in distilled_facts.split('\n') if f.strip()]
             session_id = f"{player_id}_{npc_name}" # 隔离标识
+            current_time = int(time.time()) # 加入时间戳，方便后续记忆管理
             
             for fact in facts_list:
                 self.memory_col.add(
                     documents=[fact],
-                    metadatas=[{"session_id": session_id}],
+                    metadatas=[{"session_id": session_id, "timestamp": current_time}], # session_id 隔离 + timestamp 时间衰减
                     ids=[str(uuid.uuid4())]
                 )
             print(f"\n [记忆提炼完成] 为 [{session_id}] 存档了 {len(facts_list)} 条记忆:\n {facts_list}\n")
@@ -189,36 +201,96 @@ class NPCAgentEngine:
             # tips: 2. BM25 关键词召回 (Sparse Retrieval) 公式基于词频和逆文档频率，针对专有名词，不懂语义，适合游戏背景设定
             # tips：3. 从库里拿出符合 level 的所有文本建立临时 BM25 索引 (游戏知识库通常很小，纯内存秒级完成)
             all_data = col.get(where = {"level": {"$lte": npc_level}})
-            all_docs = all_data["documents"]
+            all_docs = all_data["documents", []]
+            all_metas = all_data["metadatas", []] # 加入metadata综合排序
             
-            bm25_docs = []
+            # bm25_docs = [] ⬇改为一个字典，tip：用字典作为哈希表来进行去重合并，key是文本（天然去重），value是timestamp
+            doc_to_timestamp = {}
+            
+            # 塞入向量召回结果及其时间戳
+            if vector_res["documents"] and vector_res["documents"][0]:
+                for doc, meta in zip(vector_res["documents"][0], vector_res["metadatas"][0]):
+                    doc_to_timestamp[doc] = meta.get("timestamp", 0)
+            
+            # BM25 关键词召回 (Sparse Retrieval)
             if all_docs:
-                # 使用 jieba 进行中文分词
                 tokenized_corpus = [list(jieba.cut(doc)) for doc in all_docs]
                 bm25 = BM25Okapi(tokenized_corpus)
                 tokenized_query = list(jieba.cut(query_text))
-                # 拿取得分最高的前 5 条
                 bm25_docs = bm25.get_top_n(tokenized_query, all_docs, n = 5)
                 
-            # 合并双路结果并用set去重 (Deduplication)
-            combined_docs = list(set(vector_docs + bm25_docs))
+                # 将 BM25 结果塞入字典（如果文本已存在，由于是同一个文档，时间戳会覆盖，没影响）
+                for doc in bm25_docs:
+                    if doc not in doc_to_timestamp:
+                        # 根据文档内容，回全量池子里找到它对应的 timestamp
+                        idx = all_docs.index(doc)
+                        doc_to_timestamp[doc] = all_metas[idx].get("timestamp", 0)
+
+            unique_docs = list(doc_to_timestamp.keys())
             
-            if not combined_docs:
+            if not unique_docs:
                 return ["没有任何相关线索。"]
 
-            # Reranker：精排，选出最相关的那个，提升准确率，尤其是当向量检索和关键词检索结果不一致时。
+            # Reranker精排选出最相关的，而且选时间最新的
             if self.reranker:
-                pairs = [[query_text, doc] for doc in combined_docs]
+                pairs = [[query_text, doc] for doc in unique_docs]
                 scores = self.reranker.predict(pairs)
-                scored_docs = sorted(zip(scores, combined_docs), key = lambda x: x[0], reverse = True)
-                best_doc = scored_docs[0][1]
-                print(f"  [混合检索+精排] 成功选出最优记忆！")
-                return [best_doc]
+                
+                # 分数、时间戳、文档组装到一起 进行多级排序
+                scored_results = []
+                for score, doc in zip(scores, unique_docs):
+                    scored_results.append({
+                        "doc": doc,
+                        "score": float(score),
+                        "timestamp": doc_to_timestamp[doc]
+                    })
+                
+                # x["score"] 第一优先级排序（语义精度优先）
+                # x["timestamp"] 第二优先级排序。如果两个设定语义得分完全一致，时间最新的排前面（防止吃书）
+                scored_results.sort(key=lambda x: (x["score"], x["timestamp"]), reverse=True)
+                
+                top_docs = [item["doc"] for item in scored_results[:3]]
+                print(f"  [多路召回+精排] 选出 {len(top_docs)} 条最优设定。")
+                return top_docs
+
             else:
-                return [combined_docs[0]]
+                # 如果没有装 Reranker，纯按时间戳排，同样取 Top 3
+                sorted_docs = sorted(unique_docs, key=lambda x: doc_to_timestamp[x], reverse=True)
+                top_docs = sorted_docs[:3]
+                print(f"  [粗排] 选出 {len(top_docs)} 条最新设定。")
+                return top_docs
                 
         except Exception as e: 
+            print(f"检索异常: {e}")
             return ["当前世界尚未建立记忆库。"]
+        #     tip：暂留和上面对比，后续可以考虑把这个 BM25 的备选方案也做成一个工具
+        #     if all_docs:
+        #         # 使用 jieba 进行中文分词
+        #         tokenized_corpus = [list(jieba.cut(doc)) for doc in all_docs]
+        #         bm25 = BM25Okapi(tokenized_corpus)
+        #         tokenized_query = list(jieba.cut(query_text))
+        #         # 拿取得分最高的前 5 条
+        #         bm25_docs = bm25.get_top_n(tokenized_query, all_docs, n = 5)
+                
+        #     # 合并双路结果并用set去重 (Deduplication)
+        #     combined_docs = list(set(vector_docs + bm25_docs))
+            
+        #     if not combined_docs:
+        #         return ["没有任何相关线索。"]
+
+        #     # Reranker：精排，选出最相关的那个，提升准确率，尤其是当向量检索和关键词检索结果不一致时。
+        #     if self.reranker:
+        #         pairs = [[query_text, doc] for doc in combined_docs]
+        #         scores = self.reranker.predict(pairs)
+        #         scored_docs = sorted(zip(scores, combined_docs), key = lambda x: x[0], reverse = True)
+        #         best_doc = scored_docs[0][1]
+        #         print(f"  [混合检索+精排] 成功选出最优记忆！")
+        #         return [best_doc]
+        #     else:
+        #         return [combined_docs[0]]
+                
+        # except Exception as e: 
+        #     return ["当前世界尚未建立记忆库。"]
 
     # TODO [自动化关卡生成 PCG]
     # def _tool_generate_level(self, description: str) -> dict:
@@ -250,16 +322,30 @@ class NPCAgentEngine:
         try:
             mem_res = self.memory_col.query(
                 query_texts=[rewritten_input],
-                n_results=2, # 找出最相关的2条过往记忆
+                n_results=5, # 有过滤机制，多拿几条
                 where={"session_id": session_id}
             )
-            mem_docs = mem_res["documents"][0] if mem_res["documents"] else []
-            if mem_docs:
-                ltm_context = "\n".join(mem_docs)
-                print(f"\n [长期记忆召回] 触发！召回到关于该玩家的记忆:\n {ltm_context}\n")
-                system_prompt += f"\n\n[长期记忆回忆] 看到玩家的话，你脑海中浮现出以下关于该玩家的记忆：\n{ltm_context}"
-        except Exception:
-            pass # 如果库是空的或报错，就不打扰对话流
+            if mem_res["documents"] and mem_res["documents"][0]:
+                valid_memories = []
+                for doc, dist, meta in zip(mem_res["documents"][0], mem_res["distances"][0], mem_res["metadatas"][0]):
+                    # 过滤距离太远的
+                    if dist < 1.1: 
+                        valid_memories.append({
+                            "doc": doc, 
+                            "timestamp": meta.get("timestamp", 0)
+                        })
+                
+                # 按时间重排
+                valid_memories.sort(key=lambda x: x["timestamp"], reverse=True)
+                # 只取最精确且最新的 2 条记忆放入上下文
+                final_mems = [m["doc"] for m in valid_memories[:2]]
+                
+                if final_mems:
+                    ltm_context = "\n".join(final_mems)
+                    print(f"\n [长期记忆召回] 触发！最新记忆:\n {ltm_context}\n")
+                    system_prompt += f"\n\n[长期记忆回忆] 看到玩家的话，你脑海中浮现出以下关于该玩家的记忆：\n{ltm_context}"
+        except Exception as e:
+            print(f"记忆召回异常: {e}")
 
         messages = [{"role": "system", "content": system_prompt}] + history_messages + [{"role": "user", "content": rewritten_input}]
         

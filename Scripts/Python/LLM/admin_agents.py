@@ -21,7 +21,7 @@ class PersonaState(TypedDict):
 
 class AdminAgentWorkflow:
     def __init__(self, db_client, emb_fn):
-        # elf.llm = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
+        # self.llm = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
         self.llm = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("OPENAI_BASE_URL"))
         self.model = "qwen-plus" 
         
@@ -34,7 +34,7 @@ class AdminAgentWorkflow:
     # ================================================
     def _tool_save_json_to_local(self, npc_data: dict) -> str:
         """
-        [MCP 思想] 这是一个标准化的资源操作工具，大模型通过调用它来保存数据，而不是直接在逻辑里写文件。
+        [MCP 思想] 这是一个标准化的资源操作工具，大模型通过调用它来保存数据，而不是直接在逻辑里写文件，也确保了数据的一致性和安全性。
         """
         try:
             npc_name = npc_data.get("name", "unknown_npc").lower()
@@ -54,8 +54,16 @@ class AdminAgentWorkflow:
         try:
             col = self.db_client.get_collection(name=f"kb_{state['world_name'].lower()}", embedding_function=self.emb_fn)
             # 查文本
-            res = col.query(query_texts=[state["user_prompt"]], n_results=2)
-            docs = res["documents"][0] if res["documents"] else ["该世界暂无相关背景。"]
+            # res = col.query(query_texts=[state["user_prompt"]], n_results=2) # 这里没防止噪声 fixed
+            # docs = res["documents"][0] if res["documents"] else ["该世界暂无相关背景。"]
+            res = col.query(query_texts=[state["user_prompt"]], n_results=3)
+            valid_docs = []
+            if res["documents"] and res["documents"][0]:
+                for doc, dist in zip(res["documents"][0], res["distances"][0]):
+                    # tip：BGE 模型的 L2 距离，一般 > 1.2 就是完全不相关的废话
+                    if dist < 1.2: 
+                        valid_docs.append(doc)
+            lore_text = "\n".join(valid_docs) if valid_docs else "该世界暂无相关背景。"
             
             # 查metadata：动态获取当前世界设定的最高等级，tip：其实这里直接查文本文件名就行
             all_data = col.get(include=["metadatas"])
@@ -66,7 +74,7 @@ class AdminAgentWorkflow:
                     max_lvl = max(levels)
                     
             return {
-                "retrieved_lore": "\n".join(docs), 
+                "retrieved_lore": lore_text,
                 "max_world_level": max_lvl, 
                 "retry_count": 0, 
                 "validation_feedback": ""

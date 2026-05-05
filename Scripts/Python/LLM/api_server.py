@@ -1,3 +1,4 @@
+# 已引入新的服务设计，待废弃，留做参考
 import os
 import glob
 from fastapi import FastAPI, HTTPException

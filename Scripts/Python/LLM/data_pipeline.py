@@ -1,4 +1,5 @@
 import os
+import time
 import chromadb
 from chromadb.utils import embedding_functions
 from langchain_community.document_loaders import TextLoader
@@ -44,6 +45,8 @@ def build_world_knowledge_base(world_name: str):
     all_chunks = []
     all_metadatas = []
     all_ids = []
+    # fix：加入时间戳，防止新旧文档分布不一致
+    current_timestamp = int(time.time())
 
     # 循环读取每个层级
     for filename in os.listdir(raw_docs_dir):
@@ -76,7 +79,8 @@ def build_world_knowledge_base(world_name: str):
             all_chunks.append(chunk.page_content)
             all_metadatas.append({
                 "level": level,
-                "source": filename # 记录来源，方便溯源
+                "source": filename, # 记录来源，方便溯源
+                "timestamp": current_timestamp # 记录时间戳，方便版本管理
             })
             all_ids.append(f"{filename}_chunk_{i}")
 
