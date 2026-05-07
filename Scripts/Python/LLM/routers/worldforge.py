@@ -37,7 +37,7 @@ async def worldforge_chat(
             session_id=session_id,
             world_name=world_name,
             prompt=prompt,
-            use_rag=is_rag_enabled, # 传入核心引擎
+            use_rag=is_rag_enabled, 
             file_bytes=file_bytes,
             file_name=file_name,
             mime_type=mime_type

@@ -1,8 +1,9 @@
 import chromadb
 import redis
 
+# 脚本用来清洗玩家的长期记忆和短期记忆，适用于玩家测试过程中数据混乱需要重置的情况
 # 本地的数据库
-client = chromadb.PersistentClient(path="./chroma_data")
+client = chromadb.PersistentClient(path=".././chroma_data")
 
 # 拿到管长期记忆的那个池子
 memory_col = client.get_collection(name="agent_long_term_memory")

@@ -24,7 +24,8 @@ class NPCAgentEngine:
         
         self.redis_client = redis.Redis(host = 'localhost', port = 6379, db = 0, decode_responses = True)
         self.prompt_manager = PromptManager()
-        # RAG 
+        # RAG tip: 后面创建了单例的 ChromaDB 客户端和嵌入函数实例，这里可以改成全局单例，
+        # 但是目前来看npc_engine是主要给UE端的和网页端模块基本不会一起用，不会重复创建
         self.emb_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name = "BAAI/bge-small-zh-v1.5")
         self.db_client = chromadb.PersistentClient(path = "./chroma_data")
 

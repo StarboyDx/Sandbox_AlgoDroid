@@ -93,7 +93,7 @@ const sendMessage = async () => {
   // 组装前端显示的 Message 对象
   const userMessage = {
     role: 'user',
-    content: session.inputText || '请分析这份参考材料并进行剧本推演。', // 给没打字只传文件的场景一个默认文案
+    content: session.inputText || '请解析', // 给没打字只传文件的场景一个默认文案 ps：有点多余
     isImage: selectedFile.value?.type.startsWith('image/'),
     filePreviewUrl: filePreview.value === 'is_document' || filePreview.value === 'is_video' || filePreview.value === 'is_audio' ? null : filePreview.value,
     fileName: selectedFile.value?.name,
@@ -185,7 +185,7 @@ const confirmSaveLore = async () => {
           <h2>自由创作</h2>
         </div>
         
-        <!-- 动态配置区：id + 剧本选择，这里ID相当于一个会话标识，后端redis存着的，要换对话就更换id -->
+        <!-- 动态配置区：id + 剧本选择，tip：目前ID对应的对话重启就清空了 -->
         <div class="header-controls">
           <el-input v-model="session.id" placeholder="操作者 ID" style="width: 140px;">
             <template #prepend>ID</template>

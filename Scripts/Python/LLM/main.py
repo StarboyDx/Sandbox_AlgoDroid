@@ -7,6 +7,7 @@ import uvicorn
 from routers.chat import router as chat_router
 from routers.admin import router as admin_router
 from routers.system import router as system_router
+from routers.worldforge import router as worldforge_router
 
 print("正在初始化 AIGC 游戏微服务网关...")
 
@@ -25,6 +26,7 @@ app.add_middleware(
 app.include_router(chat_router)
 app.include_router(admin_router)
 app.include_router(system_router)
+app.include_router(worldforge_router)
 
 if __name__ == "__main__":
     print("🚀 FastAPI 启动成功！正在监听端口 8000...")

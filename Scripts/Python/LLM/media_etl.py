@@ -6,6 +6,7 @@ import subprocess
 from openai import AsyncOpenAI
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 
+# 测试，逻辑待完善
 class MediaETLFactory:
     """
     ETL 流水线：将所有转化为 LLM 能懂的文本和图片信息的逻辑都封装在这里
@@ -29,7 +30,7 @@ class MediaETLFactory:
         # 纯图片
         elif mime_type.startswith("image/"):
             b64_image = base64.b64encode(file_bytes).decode('utf-8')
-            return "用户上传了一张参考图片，请结合图片内容进行推演。", [f"data:{mime_type};base64,{b64_image}"]
+            return "【用户在本次交互中附带了一张图片】", [f"data:{mime_type};base64,{b64_image}"]
 
         # 纯音频
         elif mime_type.startswith("audio/"):
@@ -61,7 +62,10 @@ class MediaETLFactory:
             os.remove(tmp_path)
 
     async def _process_audio(self, file_bytes: bytes, file_name: str) -> str:
-        """调用 Whisper API 将语音转为文本"""
+        """
+        TODO: 逻辑和视频一样也待完善
+        调用 Whisper API 将语音转为文本，qwen的语音模型暂时不支持openai
+        """
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
@@ -74,13 +78,13 @@ class MediaETLFactory:
                 )
             return transcript.text
         except Exception as e:
-            return f"音频转写失败: {str(e)}"
+            return f"【系统提示：当前大模型服务暂未启用语音解析功能，请使用文字描述。内部信息：{str(e)}】"
         finally:
             os.remove(tmp_path)
 
     async def _process_video(self, file_bytes: bytes, file_name: str) -> tuple[str, str]:
         """
-        TODO: FFmpeg 视频处理流水线
+        TODO: FFmpeg 视频处理流水线待完善，filename用来获取后缀
         FFmpeg 提取视频信息
         1. 抽离声音转文字
         2. 抽取中间的一帧画面当封面
