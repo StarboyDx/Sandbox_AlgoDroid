@@ -4,6 +4,7 @@ import { MagicStick } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 
 // 从后端获取可选的世界列表（知识库）
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
 const worldOptions = ref([])
 const selectedWorld = ref('')
 
@@ -16,7 +17,7 @@ const generatedAsset = ref(null)
 // 页面加载时获取世界列表
 const fetchWorlds = async () => {
   try {
-    const res = await fetch('http://localhost:8000/api/v1/worlds/list')
+    const res = await fetch(`${API_BASE}/worlds/list`)
     const data = await res.json()
     worldOptions.value = data.worlds
     if (data.worlds.length > 0) {
@@ -42,7 +43,7 @@ const generateAndSave = async () => {
   generatedAsset.value = null // 清空旧数据
   
   try {
-    const response = await fetch('http://localhost:8000/api/v1/admin/generate_persona', {
+    const response = await fetch(`${API_BASE}/admin/generate_persona`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

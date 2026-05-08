@@ -19,18 +19,22 @@ public:
 
 	ASmartNPCController();
 
-	virtual void OnPossess(APawn* InPawn) override;
+	/*virtual void OnPossess(APawn* InPawn) override;*/
 
-	UFUNCTION(BlueprintCallable, Category = "AI")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "AI Components")
+	UNPCBrainComponent* LLMBrain;
+
+	UFUNCTION(BlueprintCallable, Category = "AI Interaction")
 	void StartTalkiing(FString PlayerMessage);
 
 protected:
+	virtual void BeginPlay() override;
 
 	//UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "AI Brain")
 	//UNPCBrainComponent* LLMBrain;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "AI Brain")
-	TObjectPtr<UNPCBrainComponent> LLMBrain;
+	/*UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "AI Brain")
+	TObjectPtr<UNPCBrainComponent> LLMBrain;*/
 
-	FString ActiveNpcId;
+	/*FString ActiveNpcId;*/
 };

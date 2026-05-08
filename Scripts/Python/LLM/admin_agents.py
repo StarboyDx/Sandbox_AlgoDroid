@@ -32,13 +32,13 @@ class AdminAgentWorkflow:
     # ================================================
     # 将本地文件操作封装为独立工具，供 LangGraph 节点调用
     # ================================================
-    def _tool_save_json_to_local(self, npc_data: dict) -> str:
+    def _tool_save_json_to_local(self, npc_data: dict, world_name: str) -> str:
         """
         [MCP 思想] 这是一个标准化的资源操作工具，大模型通过调用它来保存数据，而不是直接在逻辑里写文件，也确保了数据的一致性和安全性。
         """
         try:
             npc_name = npc_data.get("name", "unknown_npc").lower()
-            file_path = f"./NPCSettings/{npc_name}.json"
+            file_path = f"./NPCSettings/{world_name}/{npc_name}.json"
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(npc_data, f, ensure_ascii=False, indent=4)
@@ -143,7 +143,7 @@ class AdminAgentWorkflow:
 
     async def node_save_asset(self, state: PersonaState):
         '''node4：资源保存，调用 MCP 工具'''
-        status = self._tool_save_json_to_local(state["generated_json"])
+        status = self._tool_save_json_to_local(state["generated_json"], state["world_name"])
         return {"save_status": status}
 
     def _build_graph(self):

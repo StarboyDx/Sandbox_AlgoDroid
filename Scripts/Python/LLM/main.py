@@ -16,7 +16,11 @@ app = FastAPI(title = "AIGC 智能体引擎网关", version = "1.0.1")
 # 跨域问题解决
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"], # 允许 Vue 前端访问
+    allow_origins=[
+        "http://localhost:5173", 
+        "http://127.0.0.1:5173",
+        "http://localhost:8080"
+    ], # 允许 Vue 前端访问
     allow_credentials=True,
     allow_methods=["*"], # 允许所有请求方法 (GET, POST 等)
     allow_headers=["*"], # 允许所有请求头

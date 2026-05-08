@@ -8,14 +8,23 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from core.database import db_manager
 from media_etl import MediaETLFactory
+from collections import OrderedDict # 简单做个 LRU 控制一下会话窗口，防止内存爆满，提醒一下，目前本地来说没什么影响
 
 # 用字典存暂时只做一次会话记录，后续可以改成 Redis 或其他存储，支持跨进程和持久化，前端功能也要匹配
 # 但是我们其实这里目的是ai对话+创作，也并不需要长期记忆，触发剧本更新也是用户主动保存，这些聊天本身没有保存的必要
 # 所以暂时不做升级，这里session_id表示一次会话的标志，而且每次重启就清空了
-session_store = {}
+MAX_SESSIONS = 100
+session_store = OrderedDict()
 def get_session_history(session_id: str):
     if session_id not in session_store:
+        # 如果满了，弹出最老的那个 FIFO
+        if len(session_store) >= MAX_SESSIONS:
+            session_store.popitem(last=False) 
         session_store[session_id] = ChatMessageHistory()
+    else:
+        # 如果已存在且被访问，把它移到字典末尾，证明它是“活跃”的
+        session_store.move_to_end(session_id)
+        
     return session_store[session_id]
 
 class WorldForgeEngine:
@@ -48,9 +57,18 @@ class WorldForgeEngine:
                 col = db_manager.client.get_or_create_collection(
                     name=f"kb_{world_name.lower()}", embedding_function=db_manager.emb_fn
                 )
-                results = col.query(query_texts=[prompt], n_results=3) # Top-K 召回即可，这里不需要考虑不相关的干扰
+                results = col.query(query_texts=[prompt], n_results=3) 
+                valid_docs = []
                 if results and results['documents'] and results['documents'][0]:
-                    rag_context = "【以下是知识库中已有的世界观设定，请务必遵循且不要冲突】：\n" + "\n".join(results['documents'][0])
+                    for doc, dist in zip(results['documents'][0], results['distances'][0]):
+                        if dist < 1.2:
+                            valid_docs.append(doc)
+                
+                if valid_docs:
+                    rag_context = "【以下是知识库中检索到的相关世界观设定，请务必参考且不要冲突】：\n" + "\n\n".join(valid_docs)
+                else:
+                    rag_context = "【系统提示：当前指令未命中特定知识库记录。请基于世界观常识自由发挥。】"
+                    
             except Exception as e:
                 print(f"RAG 检索异常: {e}")
 

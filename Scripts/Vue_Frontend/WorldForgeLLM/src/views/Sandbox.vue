@@ -1,21 +1,25 @@
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, watch } from 'vue'
 import { Picture, Position, Coin } from '@element-plus/icons-vue'
 import axios from 'axios' // 计划用来处理图片
 import { ElMessage } from 'element-plus' // 引入 Element 的消息弹窗
 
 // ====== 顶部配置状态======
 // 提供给网页修改，发给后端匹配对应的数据库和 NPC 设定
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1';
+
 const sessionConfig = reactive({
-  world_name: 'Valoria',
-  npc_name: 'gareth',
-  npc_level: 5,
+  world_name: '',
+  npc_name: '',
+  npc_level: 1,
   player_id: 'test_player_001', 
 })
 
 // ====== 状态管理 (响应式数据) ======
 // 从后端获取的预设 NPC 列表
-const presetNpcs = ref([]) 
+const presetNpcs = ref([])
+// 存放可用的剧本列表
+const availableWorlds = ref([]) 
 // 输入框绑定的文本
 const inputText = ref('')
 // 聊天记录
@@ -40,16 +44,41 @@ const clearChat = () => {
   ElMessage.success('已切换测试环境，聊天记录已清空')
 }
 
-// 后端扫描拉取已经生成的NPC JSON 列表
-const fetchPresets = async () => {
+// 这里和 Persona.vue 中一致
+const fetchWorlds = async () => {
   try {
-    const res = await fetch('http://localhost:8000/api/v1/sandbox/presets')
+    const res = await fetch(`${API_BASE}/worlds/list`)
+    const data = await res.json()
+    availableWorlds.value = data.worlds
+    if (data.worlds && data.worlds.length > 0) {
+      sessionConfig.world_name = data.worlds[0] // 默认选中第一个
+    }
+  } catch (error) {
+    console.error('获取剧本列表失败', error)
+  }
+}
+
+// 后端扫描拉取已经生成的NPC JSON 列表
+const fetchPresets = async (world = '') => {
+  try {
+    const url = world ? `${API_BASE}/sandbox/presets?world_name=${world}` : `${API_BASE}/sandbox/presets`
+    const res = await fetch(url)
     const data = await res.json()
     presetNpcs.value = data.npcs
   } catch (error) {
     console.error('获取NPC列表失败', error)
   }
 }
+
+// 监听剧本变化
+watch(() => sessionConfig.world_name, (newWorld) => {
+  if (newWorld) {
+    fetchPresets(newWorld)
+    sessionConfig.npc_name = '' // 清空不匹配的NPC
+    sessionConfig.npc_level = 1
+    clearChat()
+  }
+})
 
 // 用户在下拉框选中一个存在的 NPC 时，自动同步其 Level
 const handleNpcChange = (val) => {
@@ -60,8 +89,8 @@ const handleNpcChange = (val) => {
   clearChat() 
 }
 
-onMounted(() => {
-  fetchPresets() // 页面加载时获取预设 NPC 列表
+onMounted(async () => {
+  await fetchWorlds() // 页面加载时获取剧本和NPC预设
 })
 
 // ====== 记忆提炼 (LTM) 请求 ======
@@ -72,7 +101,7 @@ const distillMemory = async () => {
   }
   isDistilling.value = true
   try {
-    const response = await fetch('http://localhost:8000/api/v1/memory/distill', {
+    const response = await fetch(`${API_BASE}/memory/distill`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -110,7 +139,7 @@ const sendMessage = async () => {
 
   try {
     // 动态读取网页上填写的名字和等级，发给后端
-    const response = await fetch('http://localhost:8000/api/v1/chat_stream', {
+    const response = await fetch(`${API_BASE}/chat_stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -139,14 +168,21 @@ const sendMessage = async () => {
       // 按行切分开，只把真实数据拼进去
       const lines = chunk.split('\n')
       for (const line of lines) {
-        // 后端数据测试出来是data开头的
         if (line.startsWith('data:')) {
-          // 截取掉 "data:" 和它后面的空格
+          // 截取并清理数据
           const text = line.substring(5).trimStart()
           
-          // 过滤掉某些大模型在结束时自带的 [DONE] 标记
           if (text && text !== '[DONE]') {
-            chatHistory.value[npcMessageIndex].content += text
+            // 如果发现是metadata的指令，直接丢弃（或这里log拦截掉），不上屏
+            if (text.startsWith('{') && text.includes('"meta"')) {
+              console.log("网页端拦截到隐藏动作指令:", text);
+              continue; 
+            }
+            
+            // 恢复换行符（如果后端转义了的话）
+            const displayText = text.replace(/\\n/g, '\n');
+            // 正常的文本台词，追加到聊天气泡
+            chatHistory.value[npcMessageIndex].content += displayText;
           }
         }
       }
@@ -173,7 +209,9 @@ const sendMessage = async () => {
         </div>
         <div class="config-item">
           <span class="label">世界观:</span>
-          <el-input v-model="sessionConfig.world_name" size="small" style="width: 120px" @change="clearChat" />
+          <el-select v-model="sessionConfig.world_name" size="small" style="width: 140px">
+            <el-option v-for="w in availableWorlds" :key="w" :label="w" :value="w" />
+          </el-select>
         </div>
         <!-- 加入下拉预设 -->
         <div class="config-item">

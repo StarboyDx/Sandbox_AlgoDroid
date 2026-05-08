@@ -34,12 +34,9 @@ async def chat_with_npc(request: ChatRequest):
     generator = agent_engine.chat_stream(
         request.world_name, request.npc_name, request.npc_level, request.player_id, request.player_message
     )
-    full_text = "".join([chunk for chunk in generator])
-    return ChatResponse(dialogue_text = full_text, action_type = "anim_talk")
+    full_text = "".join([chunk for chunk in generator if not chunk.startswith('{"meta"')])
+    return ChatResponse(dialogue_text = full_text.replace('\\n', '\n'), action_type = "anim_talk")
 
-# TODO [实时流式输出 Streaming 的 UE 端解析]
-# 目前考虑到 UE5 原生 HTTP 模块解析 Stream 比较复杂，前期优先使用上面的 /chat 接口。
-# 后续若要支持“打字机”流式效果，UE 端需要引入 VaRest 插件或自定义 C++ 线程来监听下面的 SSE 接口。
 @router.post("/chat_stream")
 async def chat_with_npc_stream(request: ChatRequest):
     """流式接口 (SSE 格式)"""
@@ -50,7 +47,11 @@ async def chat_with_npc_stream(request: ChatRequest):
             player_input = request.player_message
         )
         for token in token_stream:
+            # 首帧的 JSON 和后面的文本都加上 data: 发送出去
             yield f"data: {token}\n\n"
+        
+        # 补上结束帧
+        yield "data: [DONE]\n\n"
             
     return StreamingResponse(event_generator(), media_type = "text/event-stream")
 

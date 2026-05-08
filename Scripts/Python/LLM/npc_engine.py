@@ -1,10 +1,11 @@
 import os
 import json
-import redis
+# import redis
 import time
 import chromadb
 import jieba
 import uuid
+import concurrent.futures # tip: 多线程并发请求
 from rank_bm25 import BM25Okapi
 from chromadb.utils import embedding_functions
 from openai import OpenAI
@@ -22,7 +23,11 @@ class NPCAgentEngine:
         self.slm_model_local = "qwen2.5:1.5b" # 本地小模型
         self.slm_model_cloud = "qwen-turbo"   # 在线小模型
         
-        self.redis_client = redis.Redis(host = 'localhost', port = 6379, db = 0, decode_responses = True)
+        # self.redis_client = redis.Redis(host = 'localhost', port = 6379, db = 0, decode_responses = True)
+        # update：单例管理⬇
+        from core.database import db_manager
+        self.redis_client = db_manager.get_redis()
+
         self.prompt_manager = PromptManager()
         # RAG tip: 后面创建了单例的 ChromaDB 客户端和嵌入函数实例，这里可以改成全局单例，
         # 但是目前来看npc_engine是主要给UE端的和网页端模块基本不会一起用，不会重复创建
@@ -118,11 +123,20 @@ class NPCAgentEngine:
         """保存这一轮对话，控制记忆长度防止 Token 爆炸"""
         key = f"history:{player_id}:{npc_name}"
         try:
+            # 保存当前对话
             self.redis_client.rpush(key, json.dumps({"role": "user", "content": user_msg}, ensure_ascii=False))
             self.redis_client.rpush(key, json.dumps({"role": "assistant", "content": assistant_msg}, ensure_ascii=False))
-            self.redis_client.ltrim(key, -10, -1) # 保留最近 5 轮 (10条记录)
-        except:
-            pass
+            
+            # 10（即 5 轮对话）
+            history_len = self.redis_client.llen(key)
+            if history_len >= 10:
+                # 达到阈值，自动触发一次提炼（可以异步，也可以直接调）
+                print(f" [Redis监控] 检测到对话达到 {history_len} 条，自动触发记忆提炼...")
+                self.distill_memory(player_id, npc_name)
+                # 提炼完后可以选择清理或裁剪，防止重复提炼
+                self.redis_client.ltrim(key, -4, -1) # 提炼完只留最后两轮保持语境
+        except Exception as e:
+            print(f"Redis 保存或提炼失败: {e}")
 
     # ==========================================
     # 路由与工具箱
@@ -136,9 +150,33 @@ class NPCAgentEngine:
         except:
             res = self.llm_client.chat.completions.create(model = self.slm_model_cloud, messages = messages, temperature = 0.1)
             return res.choices[0].message.content.strip().lower()
+        
+    # ================================================================================
+    # TODO: 待根据游戏设计完善，就是小模型来做 npc 的动作推断，输出 motage，相当于npc“脊髓”
+    # ================================================================================
+    def _infer_reflex_action(self, player_input: str, npc_name: str) -> str:
+        prompt = f"""
+        你现在是 NPC [{npc_name}] 的潜意识。玩家对你说：“{player_input}”
+        请从以下枚举中选择最符合你第一反应的动作和情绪。
+        Emotion 可选: [Normal, Happy, Angry, Sad, Shocked]
+        Action 可选: [Idle, Wave, DrawSword, StepBack, ShakeHead]
+        只输出单行 JSON，格式必须为: {{"meta": true, "emotion": "...", "action": "..."}}
+        """
+        try:
+            res = self.slm_client.chat.completions.create(
+                model=self.slm_model_cloud, 
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1, 
+                max_tokens=30
+            )
+            return res.choices[0].message.content.strip()
+        except Exception as e:
+            print(f" [脊髓反射异常] {e}，降级为默认状态。")
+            return '{"meta": true, "emotion": "Normal", "action": "Idle"}'
 
+    # TODO[观察玩家信息]: 跟上面一样游戏逻辑，待配合设计，这里是默认值，作为工具之一调用
     def _tool_check_inventory(self, player_id: str): return {"gold": 5, "items": ["铁剑"]}
-
+    # TODO：同上
     def _tool_update_affinity(self, player_id: str, npc_name: str, value_change: int):
         redis_key = f"affinity:{player_id}:{npc_name}"
         try:
@@ -352,6 +390,18 @@ class NPCAgentEngine:
         
         intent = self._route_intent(rewritten_input)
         full_response_text = ""
+
+        # 多线程并发的请求，让“动作推断”和“生成流式对话”同时向不同模型发起请求
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            # tip: 开个线程去请求小模型要动作
+            future_reflex = executor.submit(self._infer_reflex_action, rewritten_input, npc_name)
+
+            # 阻塞等待动作结果
+            reflex_frame = future_reflex.result()
+            
+            # 拿到动作后第一帧推流出去 UE5 开始播动画
+            print(f"\n [引擎调度] 触发反射: {reflex_frame}")
+            yield reflex_frame
 
         if intent == 'chat':
             response = self.llm_client.chat.completions.create(model = self.slm_model_cloud, messages = messages, stream = True)

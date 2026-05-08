@@ -6,6 +6,8 @@ import { ElMessage } from 'element-plus'
 // ==========================================
 // 核心状态管理 
 // ==========================================
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1'
+
 const session = reactive({
   id: 'test_player_001', // 默认id
   world_name: '',   // 当前选中的剧本
@@ -29,7 +31,7 @@ const currentLevel = ref(1)          // 世界权限等级可选
 // 初始化
 onMounted(async () => {
   try {
-    const res = await fetch('http://localhost:8000/api/v1/worlds/list') 
+    const res = await fetch(`${API_BASE}/worlds/list`) 
     const data = await res.json()
     availableWorlds.value = data.worlds || ['Valoria', 'CyberCity'] // 容错兜底
     
@@ -122,7 +124,7 @@ const sendMessage = async () => {
 
   // 发起网络请求
   try {
-    const res = await fetch('http://localhost:8000/api/v1/worldforge/chat', {
+    const res = await fetch(`${API_BASE}/worldforge/chat`, {
       method: 'POST',
       body: formData // 浏览器会自动加上 multipart/form-data 的 header 和 boundary
     })
@@ -154,7 +156,7 @@ const openLoreEditDialog = (content) => {
 // 确认入库
 const confirmSaveLore = async () => {
   try {
-    const res = await fetch('http://localhost:8000/api/v1/worldforge/save_lore', {
+    const res = await fetch(`${API_BASE}/worldforge/save_lore`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 

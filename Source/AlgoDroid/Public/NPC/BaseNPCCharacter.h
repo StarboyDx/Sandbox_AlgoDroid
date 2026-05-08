@@ -16,7 +16,10 @@ public:
 	ABaseNPCCharacter();
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AI Identity")
-	FString NpcId;
+	FString NpcId = TEXT("gareth");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "AI Identity")
+	int32 NpcLevel = 1;
 
 protected:
 	// Called when the game starts or when spawned

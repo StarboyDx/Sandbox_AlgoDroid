@@ -9,12 +9,14 @@ class PromptManager:
         if not os.path.exists(self.settings_dir):
             os.makedirs(self.settings_dir)
             
-        # 连接 Docker 里的 Redis
-        self.redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+        # 连接 Docker 里的 Redis，和 npc_engine 中一样更新成单例创建
+        # self.redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+        from core.database import db_manager
+        self.redis_client = db_manager.get_redis()
 
     def _get_base_persona(self, npc_name: str, world_name: str) -> str:
         """从 JSON 热读取基础人设"""
-        file_path = os.path.join(self.settings_dir, f"{npc_name.lower()}.json")
+        file_path = os.path.join(self.settings_dir, world_name, f"{npc_name.lower()}.json")
         if os.path.exists(file_path):
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
