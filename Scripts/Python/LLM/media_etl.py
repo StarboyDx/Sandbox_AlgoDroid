@@ -1,5 +1,6 @@
 import os
-import io
+#import io
+import asyncio # 给ffmpeg后台处理
 import base64
 import tempfile
 import subprocess
@@ -97,12 +98,23 @@ class MediaETLFactory:
         frame_path = video_path + ".jpg"
 
         try:
-            # 暂时没有FFmpeg环境，保底直接返回提示文本和空画面
             try:
-                subprocess.run(['ffmpeg', '-i', video_path, '-q:a', '0', '-map', 'a', audio_path, '-y'], 
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-                subprocess.run(['ffmpeg', '-i', video_path, '-ss', '00:00:01', '-vframes', '1', frame_path, '-y'], 
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                # 异步抽离音频
+                proc_audio = await asyncio.create_subprocess_exec(
+                    'ffmpeg', '-i', video_path, '-q:a', '0', '-map', 'a', audio_path, '-y',
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+                )
+                await proc_audio.wait() # 挂起等待，不阻塞主线程
+                
+                # 异步抽取首帧
+                proc_frame = await asyncio.create_subprocess_exec(
+                    'ffmpeg', '-i', video_path, '-ss', '00:00:01', '-vframes', '1', frame_path, '-y',
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+                )
+                await proc_frame.wait()
+                
+                if proc_audio.returncode != 0 or proc_frame.returncode != 0:
+                    raise subprocess.CalledProcessError(proc_audio.returncode, 'ffmpeg')
             except (FileNotFoundError, subprocess.CalledProcessError) as e:
                 return f"（系统未配置 FFmpeg 或抽帧失败，无法解析视频画面与音轨。提示：{str(e)}）", ""
 

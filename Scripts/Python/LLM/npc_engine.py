@@ -29,10 +29,8 @@ class NPCAgentEngine:
         self.redis_client = db_manager.get_redis()
 
         self.prompt_manager = PromptManager()
-        # RAG tip: 后面创建了单例的 ChromaDB 客户端和嵌入函数实例，这里可以改成全局单例，
-        # 但是目前来看npc_engine是主要给UE端的和网页端模块基本不会一起用，不会重复创建
-        self.emb_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name = "BAAI/bge-small-zh-v1.5")
-        self.db_client = chromadb.PersistentClient(path = "./chroma_data")
+        self.db_client = db_manager.client
+        self.emb_fn = db_manager.emb_fn
 
         # Reranker  
         # tip：相当于在检索到候选文档后，使用一个专门的模型来对这些文档进行更细粒度的相关性评分，从而选出最相关的那个。
@@ -142,7 +140,16 @@ class NPCAgentEngine:
     # 路由与工具箱
     # ==========================================
     def _route_intent(self, text: str) -> str:
-        prompt = f"分析文本，输出 chat、lore、action 之一。输入: {text}"
+        prompt = f"""
+        分析玩家输入，判断其包含的所有意图。
+        可选标签：
+        - chat (纯日常闲聊、简单的语气词、没有任何实质性动作)
+        - lore (询问世界观、历史、秘密、打探情报)
+        - action (涉及物品交易、动作交互、强烈的态度变化)
+        
+        如果包含多个意图，请用逗号分隔输出（例如：action,lore）。如果只是单纯打招呼，仅输出 chat。
+        输入: {text}
+        输出:"""
         messages = [{"role": "user", "content": prompt}]
         try:
             res = self.slm_client.chat.completions.create(model = self.slm_model_local, messages = messages, temperature = 0.1)
@@ -164,15 +171,25 @@ class NPCAgentEngine:
         """
         try:
             res = self.slm_client.chat.completions.create(
-                model=self.slm_model_cloud, 
+                model=self.slm_model_local, 
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1, 
                 max_tokens=30
             )
             return res.choices[0].message.content.strip()
         except Exception as e:
-            print(f" [脊髓反射异常] {e}，降级为默认状态。")
-            return '{"meta": true, "emotion": "Normal", "action": "Idle"}'
+            print(f"  [脊髓反射本地失败] {e}，尝试切换云端大模型...")
+            try:
+                res = self.llm_client.chat.completions.create(
+                    model=self.slm_model_cloud, 
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.1, 
+                    max_tokens=30
+                )
+                return res.choices[0].message.content.strip()
+            except Exception as e2:
+                print(f"  [脊髓反射异常] {e2}，降级为默认状态。")
+                return '{"meta": true, "emotion": "Normal", "action": "Idle"}'
 
     # TODO[观察玩家信息]: 跟上面一样游戏逻辑，待配合设计，这里是默认值，作为工具之一调用
     def _tool_check_inventory(self, player_id: str): return {"gold": 5, "items": ["铁剑"]}
@@ -235,32 +252,38 @@ class NPCAgentEngine:
             # Recall 双路召回：向量检索 + BM25 关键词检索
             # tips：1. 向量召回 (Dense Retrieval) ，相当于算余弦相似度，懂语义但可能专有名词不准
             vector_res = col.query(query_texts = [query_text], n_results = 5, where = {"level": {"$lte": npc_level}})
-            vector_docs = vector_res["documents"][0] if vector_res["documents"] else []
+            
+            # fixed: 抽取二维数组中的一维列表，并防止越界
+            vector_docs = vector_res["documents"][0] if (vector_res.get("documents") and len(vector_res["documents"]) > 0) else []
+            vector_metas = vector_res["metadatas"][0] if (vector_res.get("metadatas") and len(vector_res["metadatas"]) > 0) else []
             
             # tips: 2. BM25 关键词召回 (Sparse Retrieval) 公式基于词频和逆文档频率，针对专有名词，不懂语义，适合游戏背景设定
             # tips：3. 从库里拿出符合 level 的所有文本建立临时 BM25 索引 (游戏知识库通常很小，纯内存秒级完成)
             all_data = col.get(where = {"level": {"$lte": npc_level}})
-            all_docs = all_data["documents", []]
-            all_metas = all_data["metadatas", []] # 加入metadata综合排序
+            
+            # fixed: 原先的 all_data["documents", []] 语法错误，必须用 .get()
+            all_docs = all_data.get("documents", [])
+            all_metas = all_data.get("metadatas", []) 
             
             # bm25_docs = [] ⬇改为一个字典，tip：用字典作为哈希表来进行去重合并，key是文本（天然去重），value是timestamp
             doc_to_timestamp = {}
             
             # 塞入向量召回结果及其时间戳
-            if vector_res["documents"] and vector_res["documents"][0]:
-                for doc, meta in zip(vector_res["documents"][0], vector_res["metadatas"][0]):
+            for doc, meta in zip(vector_docs, vector_metas):
+                # fixed: 确保 doc 是纯字符串才能作为字典的 Key 
+                if isinstance(doc, str):
                     doc_to_timestamp[doc] = meta.get("timestamp", 0)
             
             # BM25 关键词召回 (Sparse Retrieval)
             if all_docs:
-                tokenized_corpus = [list(jieba.cut(doc)) for doc in all_docs]
+                tokenized_corpus = [list(jieba.cut(str(doc))) for doc in all_docs]
                 bm25 = BM25Okapi(tokenized_corpus)
                 tokenized_query = list(jieba.cut(query_text))
                 bm25_docs = bm25.get_top_n(tokenized_query, all_docs, n = 5)
                 
                 # 将 BM25 结果塞入字典（如果文本已存在，由于是同一个文档，时间戳会覆盖，没影响）
                 for doc in bm25_docs:
-                    if doc not in doc_to_timestamp:
+                    if isinstance(doc, str) and doc not in doc_to_timestamp:
                         # 根据文档内容，回全量池子里找到它对应的 timestamp
                         idx = all_docs.index(doc)
                         doc_to_timestamp[doc] = all_metas[idx].get("timestamp", 0)
@@ -343,9 +366,9 @@ class NPCAgentEngine:
     @property
     def tools_config(self):
         return [
-            {"type": "function", "function": {"name": "check_inventory", "description": "查背包金币物品", "parameters": {"type": "object", "properties": {"player_id": {"type": "string"}}, "required": ["player_id"]}}},
-            {"type": "function", "function": {"name": "search_lore", "description": "查世界观", "parameters": {"type": "object", "properties": {"query_text": {"type": "string"}}, "required": ["query_text"]}}},
-            {"type": "function", "function": {"name": "update_affinity", "description": "玩家态度恶劣或讨好时调用，改变好感度。", "parameters": {"type": "object", "properties": {"player_id": {"type": "string"}, "npc_name": {"type": "string"}, "value_change": {"type": "integer"}}, "required": ["player_id", "npc_name", "value_change"]}}}
+            {"type": "function", "function": {"name": "check_inventory", "description": "查背包金币物品，当玩家询问自己拥有什么物品时必须调用。"}},
+            {"type": "function", "function": {"name": "search_lore", "description": "查世界观设定", "parameters": {"type": "object", "properties": {"query_text": {"type": "string", "description": "提取玩家问题中的专有名词或查询重点"}}, "required": ["query_text"]}}},
+            {"type": "function", "function": {"name": "update_affinity", "description": "玩家态度恶劣或讨好时调用，改变好感度。", "parameters": {"type": "object", "properties": {"value_change": {"type": "integer", "description": "加好感传正数，扣好感传负数"}}, "required": ["value_change"]}}}
         ]
 
     # =========================================
@@ -391,7 +414,7 @@ class NPCAgentEngine:
         intent = self._route_intent(rewritten_input)
         full_response_text = ""
 
-        # 多线程并发的请求，让“动作推断”和“生成流式对话”同时向不同模型发起请求
+        # TODO: FIX  这里并发逻辑不对，先验证
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             # tip: 开个线程去请求小模型要动作
             future_reflex = executor.submit(self._infer_reflex_action, rewritten_input, npc_name)
@@ -403,27 +426,32 @@ class NPCAgentEngine:
             print(f"\n [引擎调度] 触发反射: {reflex_frame}")
             yield reflex_frame
 
-        if intent == 'chat':
-            response = self.llm_client.chat.completions.create(model = self.slm_model_cloud, messages = messages, stream = True)
+        if 'lore' not in intent and 'action' not in intent:
+            print(f"\n [路由] 纯闲聊意图: {intent}")
+            response = self.llm_client.chat.completions.create(model=self.slm_model_cloud, messages=messages, stream=True)
             for chunk in response:
                 content = chunk.choices[0].delta.content
                 if content:
                     full_response_text += content
                     yield content
         else:
+            print(f"\n [路由] 检测到复杂意图: {intent}")
             response = self.llm_client.chat.completions.create(model = self.llm_model, messages = messages, tools = self.tools_config, tool_choice = "auto")
             tool_calls = response.choices[0].message.tool_calls
             
             if tool_calls:
-                messages.append(response.choices[0].message)
+                messages.append(response.choices[0].message.model_dump(exclude_none=True))
                 for call in tool_calls:
-                    args = json.loads(call.function.arguments)
+                    print(f"\n [选择] 调用工具: {call.function.name}")
+                    args = json.loads(call.function.arguments) if call.function.arguments else {}
                     if call.function.name == "check_inventory": 
                         res = self._tool_check_inventory(player_id)
                     elif call.function.name == "search_lore": 
-                        res = self._tool_search_lore(args["query_text"], npc_level, world_name)
+                        res = self._tool_search_lore(args.get("query_text", ""), npc_level, world_name)
                     elif call.function.name == "update_affinity": 
-                        res = self._tool_update_affinity(player_id, npc_name, args["value_change"])
+                        res = self._tool_update_affinity(player_id, npc_name, args.get("value_change", 0))
+                    else:
+                        res = {"error": f"Tool {call.function.name} not found or hallucinated by model."}
                     messages.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(res, ensure_ascii=False)})
                 
                 final_res = self.llm_client.chat.completions.create(model = self.llm_model, messages = messages, stream = True)

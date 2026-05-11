@@ -1,5 +1,6 @@
 import json
 import os
+import asyncio # **待验证
 from typing import TypedDict
 from langgraph.graph import StateGraph, END
 # from openai import OpenAI
@@ -56,7 +57,7 @@ class AdminAgentWorkflow:
             # 查文本
             # res = col.query(query_texts=[state["user_prompt"]], n_results=2) # 这里没防止噪声 fixed
             # docs = res["documents"][0] if res["documents"] else ["该世界暂无相关背景。"]
-            res = col.query(query_texts=[state["user_prompt"]], n_results=3)
+            res = await asyncio.to_thread(col.query, query_texts=[state["user_prompt"]], n_results=3) # 异步做法待验证
             valid_docs = []
             if res["documents"] and res["documents"][0]:
                 for doc, dist in zip(res["documents"][0], res["distances"][0]):

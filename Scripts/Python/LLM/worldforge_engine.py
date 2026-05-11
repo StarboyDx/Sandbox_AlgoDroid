@@ -8,24 +8,24 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from core.database import db_manager
 from media_etl import MediaETLFactory
-from collections import OrderedDict # 简单做个 LRU 控制一下会话窗口，防止内存爆满，提醒一下，目前本地来说没什么影响
+from langchain_community.chat_message_histories import RedisChatMessageHistory
 
 # 用字典存暂时只做一次会话记录，后续可以改成 Redis 或其他存储，支持跨进程和持久化，前端功能也要匹配
 # 但是我们其实这里目的是ai对话+创作，也并不需要长期记忆，触发剧本更新也是用户主动保存，这些聊天本身没有保存的必要
 # 所以暂时不做升级，这里session_id表示一次会话的标志，而且每次重启就清空了
-MAX_SESSIONS = 100
-session_store = OrderedDict()
 def get_session_history(session_id: str):
-    if session_id not in session_store:
-        # 如果满了，弹出最老的那个 FIFO
-        if len(session_store) >= MAX_SESSIONS:
-            session_store.popitem(last=False) 
-        session_store[session_id] = ChatMessageHistory()
-    else:
-        # 如果已存在且被访问，把它移到字典末尾，证明它是“活跃”的
-        session_store.move_to_end(session_id)
-        
-    return session_store[session_id]
+    """
+    使用 Redis 替代内存字典，支持多进程状态共享和持久化。
+    设置 3600 秒（1小时）过期时间，自动充当 LRU 垃圾回收。
+    """
+    redis_url = f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', 6379)}/0"
+    
+    return RedisChatMessageHistory(
+        session_id=session_id,
+        url=redis_url,
+        key_prefix="worldforge:history:",
+        ttl=3600  # 1小时自动清理内存
+    )
 
 class WorldForgeEngine:
     def __init__(self):
